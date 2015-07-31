@@ -1,7 +1,7 @@
 require 'active_record' unless defined? ActiveRecord
 
 module Paranoia
-  @@default_sentinel_value = nil
+  @@default_sentinel_value = false
 
   # Change default_sentinel_value in a rails initilizer
   def self.default_sentinel_value=(val)
@@ -87,8 +87,8 @@ module Paranoia
         # This only happened on Rails versions earlier than 4.1.
         noop_if_frozen = ActiveRecord.version < Gem::Version.new("4.1")
         if (noop_if_frozen && !@attributes.frozen?) || !noop_if_frozen
-          write_attribute paranoia_column, paranoia_sentinel_value
-          update_column paranoia_column, paranoia_sentinel_value
+          assign_attributes(paranoia_column => paranoia_sentinel_value, paranoia_datetime_column => nil)
+          update_columns(paranoia_column => paranoia_sentinel_value, paranoia_datetime_column => nil)
         end
         restore_associated_records if opts[:recursive]
       end
@@ -114,11 +114,17 @@ module Paranoia
     # Let's not touch it if it's frozen.
     unless self.frozen?
       if with_transaction
-        with_transaction_returning_status { touch(paranoia_column) }
+        with_transaction_returning_status { update_paranoia_attributes }
       else
-        touch(paranoia_column)
+        update_paranoia_attributes
       end
     end
+  end
+
+  def update_paranoia_attributes
+    touch(paranoia_datetime_column)
+    write_attribute(paranoia_column, !paranoia_sentinel_value)
+    update_column(paranoia_column, !paranoia_sentinel_value)
   end
 
   # restore associated records that have been soft deleted when
@@ -144,7 +150,7 @@ module Paranoia
       if association_data.nil? && association.macro.to_s == "has_one"
         association_class_name = association.options[:class_name].present? ? association.options[:class_name] : association.name.to_s.camelize
         association_foreign_key = association.options[:foreign_key].present? ? association.options[:foreign_key] : "#{self.class.name.to_s.underscore}_id"
-        Object.const_get(association_class_name).only_deleted.where(association_foreign_key => self.id).first.try(:restore, recursive: true)
+        Object.const_get(association_class_name).only_deleted.where(association_foreign_key, id).first.try(:restore, recursive: true)
       end
     end
 
@@ -178,9 +184,10 @@ class ActiveRecord::Base
     end
 
     include Paranoia
-    class_attribute :paranoia_column, :paranoia_sentinel_value
+    class_attribute :paranoia_column, :paranoia_sentinel_value, :paranoia_datetime_column
 
-    self.paranoia_column = (options[:column] || :deleted_at).to_s
+    self.paranoia_column = (options[:column] || :deleted_flag).to_s
+    self.paranoia_datetime_column = (options[:datetime_column] || :deleted_at).to_s
     self.paranoia_sentinel_value = options.fetch(:sentinel_value) { Paranoia.default_sentinel_value }
     def self.paranoia_scope
       where(table_name => { paranoia_column => paranoia_sentinel_value })
